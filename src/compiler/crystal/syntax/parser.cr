@@ -1089,9 +1089,11 @@ module Crystal
       slash_is_regex!
       next_token_skip_statement_end
       exps = parse_expressions
-      exps2 = Expressions.new([exps] of ASTNode).at(exps)
       node, end_location = parse_exception_handler exps
       node.end_location = end_location
+      if !node.is_a?(ExceptionHandler) && !node.is_a?(Expressions)
+        node = Expressions.new([node]).at(node).at_end(node)
+      end
       node
     end
 

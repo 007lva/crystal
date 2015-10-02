@@ -606,6 +606,7 @@ describe "Parser" do
   it_parses "foo[0] = 1", Call.new("foo".call, "[]=", 0.int32, 1.int32)
   it_parses "foo[0] = 1 if 2", If.new(2.int32, Call.new("foo".call, "[]=", 0.int32, 1.int32))
 
+  it_parses "begin; 1; end;", Expressions.new([1.int32] of ASTNode)
   it_parses "begin; 1; 2; 3; end;", Expressions.new([1.int32, 2.int32, 3.int32] of ASTNode)
 
   it_parses "self", "self".var
@@ -634,7 +635,7 @@ describe "Parser" do
   it_parses "class Foo; end\nwhile true; end", [ClassDef.new("Foo".path), While.new(true.bool)]
   it_parses "while true; end\nif true; end", [While.new(true.bool), If.new(true.bool)]
   it_parses "(1)\nif true; end", [Expressions.new([1.int32] of ASTNode), If.new(true.bool)]
-  it_parses "begin\n1\nend\nif true; end", [1.int32, If.new(true.bool)]
+  it_parses "begin\n1\nend\nif true; end", [Expressions.new([1.int32] of ASTNode), If.new(true.bool)]
 
   it_parses "Foo::Bar", ["Foo", "Bar"].path
 
@@ -788,8 +789,8 @@ describe "Parser" do
   it_parses "[/ /, / /]", ArrayLiteral.new([regex(" "), regex(" ")] of ASTNode)
   it_parses "{/ / => / /, / / => / /}", HashLiteral.new([HashLiteral::Entry.new(regex(" "), regex(" ")), HashLiteral::Entry.new(regex(" "), regex(" "))])
   it_parses "{/ /, / /}", TupleLiteral.new([regex(" "), regex(" ")] of ASTNode)
-  it_parses "begin; / /; end", regex(" ")
-  it_parses "begin\n/ /\nend", regex(" ")
+  it_parses "begin; / /; end", Expressions.new([regex(" ")] of ASTNode)
+  it_parses "begin\n/ /\nend", Expressions.new([regex(" ")] of ASTNode)
 
   it_parses "1 =~ 2", Call.new(1.int32, "=~", 2.int32)
   it_parses "1.=~(2)", Call.new(1.int32, "=~", 2.int32)
