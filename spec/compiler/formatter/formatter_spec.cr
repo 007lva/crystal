@@ -70,6 +70,13 @@ describe Crystal::Formatter do
     assert_format "#{keyword} 1\n2; 3\nelse\n3\nend", "#{keyword} 1\n  2; 3\nelse\n  3\nend"
   end
 
+  assert_format "if 1\n2\nelsif\n3\n4\nend", "if 1\n  2\nelsif 3\n  4\nend"
+  assert_format "if 1\n2\nelsif\n3\n4\nelsif 5\n6\nend", "if 1\n  2\nelsif 3\n  4\nelsif 5\n  6\nend"
+  assert_format "if 1\n2\nelsif\n3\n4\nelse\n6\nend", "if 1\n  2\nelsif 3\n  4\nelse\n  6\nend"
+
+  assert_format "if 1\n2\nend\nif 3\nend", "if 1\n  2\nend\nif 3\nend"
+  assert_format "if 1\nelse\n2\nend\n3", "if 1\nelse\n  2\nend\n3"
+
   assert_format "1 ? 2 : 3"
   assert_format "1 ?\n  2    :   \n 3", "1 ? 2 : 3"
 
@@ -99,4 +106,26 @@ describe Crystal::Formatter do
   assert_format "def   foo (  x  =   1 )  \n  end", "def foo(x = 1)\nend"
   assert_format "def   foo (  x  :  Int32 )  \n  end", "def foo(x : Int32)\nend"
   assert_format "def   foo (  x  =   1  :  Int32 )  \n  end", "def foo(x = 1 : Int32)\nend"
+
+  assert_format "foo"
+  assert_format "foo()"
+  assert_format "foo(  )", "foo()"
+  assert_format "foo  1", "foo 1"
+  assert_format "foo  1  ,   2", "foo 1, 2"
+  assert_format "foo(  1  ,   2 )", "foo(1, 2)"
+
+  assert_format "foo . bar", "foo.bar"
+  assert_format "foo . bar( x , y )", "foo.bar(x, y)"
+  assert_format "foo do  \n x \n end", "foo do\n  x\nend"
+  assert_format "foo do  | x | \n x \n end", "foo do |x|\n  x\nend"
+  assert_format "foo do  | x , y | \n x \n end", "foo do |x, y|\n  x\nend"
+  assert_format "if 1\nfoo do  | x , y | \n x \n end\nend", "if 1\n  foo do |x, y|\n    x\n  end\nend"
+
+  assert_format "1   +   2", "1 + 2"
+  assert_format "1   >   2", "1 > 2"
+
+  assert_format "1  ||  2", "1 || 2"
+  assert_format "1  &&  2", "1 && 2"
+
+  assert_format "def foo\nend\ndef bar\nend"
 end

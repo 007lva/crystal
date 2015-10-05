@@ -281,6 +281,12 @@ module Crystal
       write prefix
       next_token_skip_space_or_newline
 
+      format_if_at_cond node
+
+      false
+    end
+
+    def format_if_at_cond(node, check_end = true)
       no_indent { node.cond.accept self }
 
       write_line
@@ -292,22 +298,32 @@ module Crystal
 
       skip_space_or_newline
 
+      node_else = node.else
+
       if @token.keyword?(:else)
         write_indent
         write "else"
         write_line
         next_token_skip_space_or_newline
 
-        unless node.else.is_a?(Nop)
+        unless node_else.is_a?(Nop)
           indent { node.else.accept self }
         end
-        @output.puts
+        write_line
+      elsif node_else.is_a?(If) && @token.keyword?(:elsif)
+        write_indent
+        write "elsif "
+        next_token_skip_space_or_newline
+        format_if_at_cond node_else, check_end: false
       end
 
-      write_indent
-      write "end"
-
-      false
+      if check_end
+        skip_space_or_newline
+        check_end()
+        write_indent
+        write "end"
+        next_token
+      end
     end
 
     def visit(node : Def)
@@ -348,10 +364,10 @@ module Crystal
         indent { body.accept self }
       end
       write_line
-      write_indent
 
       skip_space_or_newline
       check_end
+      write_indent
       write "end"
       next_token
 
@@ -465,6 +481,127 @@ module Crystal
       false
     end
 
+    def visit(node : Call)
+      prelude
+
+      if obj = node.obj
+        no_indent { obj.accept self }
+        skip_space
+
+        if @token.type != :"."
+          # It's an operator
+          write " "
+          write @token.type
+          write " "
+          next_token_skip_space_or_newline
+          no_indent { node.args.first.accept self }
+          return false
+        end
+
+        write "."
+        next_token_skip_space_or_newline
+      end
+
+      check :IDENT
+      write node.name
+      next_token_skip_space
+
+      if @token.type == :"("
+        check :"("
+        write "("
+        next_token_skip_space_or_newline
+        format_call_args(node)
+        skip_space_or_newline
+        check :")"
+        write ")"
+        next_token
+      elsif !node.args.empty?
+        write " "
+        format_call_args(node)
+      end
+
+      if block = node.block
+        skip_space
+        block.accept self
+      end
+
+      false
+    end
+
+    def format_call_args(node)
+      node.args.each_with_index do |arg, i|
+        no_indent { arg.accept self }
+        if last?(i, node.args)
+        else
+          skip_space
+          check :","
+          write ", "
+          next_token_skip_space_or_newline
+        end
+      end
+    end
+
+    def visit(node : Block)
+      if @token.keyword?(:do)
+        write " do"
+        next_token_skip_space_or_newline
+        unless node.args.empty?
+          check :"|"
+          write " |"
+          next_token_skip_space_or_newline
+          node.args.each_with_index do |arg, i|
+            no_indent { arg.accept self }
+            skip_space_or_newline
+            if @token.type == :","
+              next_token_skip_space_or_newline
+              write ", " unless last?(i, node.args)
+            end
+          end
+          skip_space_or_newline
+          check :"|"
+          write "|"
+          next_token_skip_space_or_newline
+        end
+        write_line
+        indent do
+          node.body.accept self
+        end
+        skip_space_or_newline
+        write_line
+        check_end
+        write_indent
+        write "end"
+        next_token
+      end
+
+      false
+    end
+
+    def visit(node : Or)
+      format_binary node, :"||"
+    end
+
+    def visit(node : And)
+      format_binary node, :"&&"
+    end
+
+    def format_binary(node, token)
+      prelude
+
+      node.left.accept self
+      next_token_skip_space
+
+      check token
+      write " "
+      write token
+      write " "
+      next_token_skip_space_or_newline
+
+      node.right.accept self
+
+      false
+    end
+
     def visit(node : ASTNode)
       node.raise "missing handler for #{node.class}"
       true
@@ -567,11 +704,11 @@ module Crystal
     end
 
     def check_keyword(*keywords)
-      raise "expecting keyword #{keywords.join " or "}, not #{@token.type}, #{@token.value}" unless keywords.any? { |k| @token.keyword?(k) }
+      raise "expecting keyword #{keywords.join " or "}, not `#{@token.type}, #{@token.value}`, at #{@token.location}" unless keywords.any? { |k| @token.keyword?(k) }
     end
 
     def check(token_type)
-      raise "expecting #{token_type}, not #{@token.type}" unless @token.type == token_type
+      raise "expecting #{token_type}, not `#{@token.type}, #{@token.value}`, at #{@token.location}" unless @token.type == token_type
     end
 
     def check_end
