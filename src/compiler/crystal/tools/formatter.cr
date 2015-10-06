@@ -152,11 +152,46 @@ module Crystal
       check :DELIMITER_START
 
       write @token.raw
-      @token = @lexer.next_string_token(@token.delimiter_state)
+      next_string_token
 
       while @token.type == :STRING
         write @token.raw
-        @token = @lexer.next_string_token(@token.delimiter_state)
+        next_string_token
+      end
+
+      check :DELIMITER_END
+      write @token.raw
+      next_token
+
+      false
+    end
+
+    def visit(node : StringInterpolation)
+      prelude
+
+      check :DELIMITER_START
+
+      write @token.raw
+      next_string_token
+
+      delimiter_state = @token.delimiter_state
+
+      node.expressions.each do |exp|
+        if exp.is_a?(StringLiteral)
+          write @token.raw
+          next_string_token
+        else
+          check :INTERPOLATION_START
+          write "\#{"
+          delimiter_state = @token.delimiter_state
+          next_token_skip_space_or_newline
+          no_indent { exp.accept self }
+          skip_space_or_newline
+          check :"}"
+          write "}"
+          @token.delimiter_state = delimiter_state
+          next_string_token
+        end
       end
 
       check :DELIMITER_END
@@ -214,6 +249,23 @@ module Crystal
         write "]"
       when :"[]"
         write "[]"
+      when :STRING_ARRAY_START
+        first = true
+        write "%w("
+        while true
+          next_string_array_token
+          case @token.type
+          when :STRING
+            write " " unless first
+            write @token.raw
+            first = false
+          when :STRING_ARRAY_END
+            write ")"
+            next_token
+            break
+          end
+        end
+        return false
       end
 
       next_token_skip_space
@@ -246,6 +298,92 @@ module Crystal
           write "::"
           next_token
         end
+      end
+
+      false
+    end
+
+    def visit(node : Generic)
+      prelude
+
+      name = node.name
+
+      # Check if it's T* instead of Pointer(T)
+      if name.global && name.names.size == 1 && name.names.first == "Pointer" && @token.value != "Pointer"
+        node.type_vars.first.accept self
+        skip_space_or_newline
+        check :"*"
+        write "*"
+        next_token
+        return false
+      end
+
+      # Check if it's T[N] instead of StaticArray(T, N)
+      if name.global && name.names.size == 1 && name.names.first == "StaticArray" && @token.value != "StaticArray"
+        node.type_vars[0].accept self
+        skip_space_or_newline
+        check :"["
+        write "["
+        next_token_skip_space_or_newline
+        node.type_vars[1].accept self
+        skip_space_or_newline
+        check :"]"
+        write "]"
+        next_token
+        return false
+      end
+
+      name.accept self
+      skip_space_or_newline
+
+      check :"("
+      write "("
+      next_token_skip_space_or_newline
+
+      node.type_vars.each_with_index do |type_var, i|
+        no_indent { type_var.accept self }
+        skip_space_or_newline
+        if @token.type == :","
+          write ", " unless last?(i, node.type_vars)
+          next_token_skip_space_or_newline
+        end
+      end
+
+      check :")"
+      write ")"
+      next_token
+
+      false
+    end
+
+    def visit(node : Union)
+      has_parenthesis = false
+      if @token.type == :"("
+        write "("
+        next_token_skip_space_or_newline
+        has_parenthesis = true
+      end
+
+      node.types.each_with_index do |type, i|
+        no_indent { type.accept self }
+        skip_space_or_newline
+
+        # This can happen if it's a nilable type written like T?
+        case @token.type
+        when :"?"
+          write "?"
+          next_token
+          break
+        when :"|"
+          write " | " unless last?(i, node.types)
+          next_token_skip_space_or_newline
+        end
+      end
+
+      if has_parenthesis
+        check :")"
+        write ")"
+        next_token
       end
 
       false
@@ -364,6 +502,12 @@ module Crystal
     def visit(node : Def)
       prelude
 
+      if node.abstract
+        check_keyword :abstract
+        write "abstract "
+        next_token_skip_space_or_newline
+      end
+
       check_keyword :def
       write "def "
       next_token_skip_space_or_newline
@@ -398,13 +542,16 @@ module Crystal
         write_line
         indent { body.accept self }
       end
+
       write_line
 
-      skip_space_or_newline
-      check_end
-      write_indent
-      write "end"
-      next_token
+      unless node.abstract
+        skip_space_or_newline
+        check_end
+        write_indent
+        write "end"
+        next_token
+      end
 
       false
     end
@@ -416,17 +563,36 @@ module Crystal
       if node.args.empty?
         if @token.type == :"("
           next_token_skip_space_or_newline
+
+          if block_arg = node.block_arg
+            check :"&"
+            write "(&"
+            next_token_skip_space
+            no_indent { block_arg.accept self }
+            skip_space_or_newline
+            write ")"
+          end
+
           check :")"
           next_token_skip_space_or_newline
+        elsif block_arg = node.block_arg
+          skip_space_or_newline
+          check :"&"
+          write " &"
+          next_token_skip_space
+          no_indent { block_arg.accept self }
+          skip_space
         end
       else
         prefix_size = @column + 1
 
         old_indent = @indent
         next_needs_indent = false
+        has_parenthesis = false
         @indent = 0
 
         if @token.type == :"("
+          has_parenthesis = true
           write "("
           next_token_skip_space
           if @token.type == :NEWLINE
@@ -466,7 +632,16 @@ module Crystal
           end
         end
 
-        if @token.type == :")"
+        if block_arg = node.block_arg
+          check :"&"
+          write ", &"
+          next_token_skip_space
+          no_indent { block_arg.accept self }
+          skip_space
+        end
+
+        if has_parenthesis
+          check :")"
           write ")"
           next_token_skip_space_or_newline
         end
@@ -479,6 +654,7 @@ module Crystal
 
     def visit(node : Arg)
       prelude
+
       write @token.value
       next_token
 
@@ -501,7 +677,80 @@ module Crystal
       false
     end
 
+    def visit(node : BlockArg)
+      write @token.value
+      next_token_skip_space
+
+      if (restriction = node.fun) && @token.type == :":"
+        skip_space_or_newline
+        check :":"
+        write " : "
+        next_token_skip_space_or_newline
+        no_indent { restriction.accept self }
+      end
+
+      false
+    end
+
+    def visit(node : Fun)
+      has_parenthesis = false
+      if @token.type == :"("
+        write "("
+        next_token_skip_space_or_newline
+        has_parenthesis = true
+      end
+
+      if inputs = node.inputs
+        inputs.each_with_index do |input, i|
+          input.accept self
+          skip_space_or_newline
+          if @token.type == :","
+            write ", " unless last?(i, inputs)
+            next_token_skip_space_or_newline
+          end
+        end
+        write " "
+      end
+
+      check :"->"
+      write "-> "
+      next_token_skip_space_or_newline
+
+      if output = node.output
+        output.accept self
+      end
+
+      if has_parenthesis
+        check :")"
+        write ")"
+        next_token
+      end
+
+      false
+    end
+
     def visit(node : Var)
+      prelude
+      write node.name
+      next_token
+      false
+    end
+
+    def visit(node : InstanceVar)
+      prelude
+      write node.name
+      next_token
+      false
+    end
+
+    def visit(node : ClassVar)
+      prelude
+      write node.name
+      next_token
+      false
+    end
+
+    def visit(node : Global)
       prelude
       write node.name
       next_token
@@ -522,11 +771,18 @@ module Crystal
           elsif @token.type == :"["
             write "["
             next_token_skip_space_or_newline
-            node.args.each_with_index do |arg, i|
+
+            args = node.args
+
+            if node.name == "[]="
+              last_arg = args.pop
+            end
+
+            args.each_with_index do |arg, i|
               no_indent { arg.accept self }
               skip_space_or_newline
               if @token.type == :","
-                unless last?(i, node.args)
+                unless last?(i, args)
                   write ", "
                 end
                 next_token_skip_space_or_newline
@@ -535,10 +791,45 @@ module Crystal
             check :"]"
             write "]"
             next_token
+
+            if node.name == "[]?"
+              skip_space
+              check :"?"
+              write "?"
+              next_token
+            end
+
+            if last_arg
+              skip_space_or_newline
+
+              if @token.type != :"="
+                # This is the case of `x[y] op= value`
+                write " "
+                write @token.type
+                write " "
+                next_token_skip_space_or_newline
+                no_indent { (last_arg as Call).args.first.accept self }
+                return false
+              end
+
+              write " = "
+              next_token_skip_space_or_newline
+              no_indent { last_arg.accept self }
+            end
+
             return false
           elsif @token.type == :"[]"
             write "[]"
             next_token
+
+            if node.name == "[]="
+              skip_space_or_newline
+              check :"="
+              write " = "
+              next_token_skip_space_or_newline
+              no_indent { node.args.first.accept self }
+            end
+
             return false
           else
             write " "
@@ -555,8 +846,23 @@ module Crystal
       end
 
       check :IDENT
-      write node.name
+
+      assignment = node.name.ends_with?('=')
+
+      if assignment
+        write node.name[0 ... -1]
+      else
+        write node.name
+      end
       next_token_skip_space
+
+      if assignment
+        check :"="
+        write " = "
+        next_token_skip_space_or_newline
+        no_indent { node.args.first.accept self }
+        return false
+      end
 
       if @token.type == :"("
         check :"("
@@ -567,7 +873,7 @@ module Crystal
         check :")"
         write ")"
         next_token
-      elsif !node.args.empty?
+      elsif !node.args.empty? || node.named_args
         write " "
         format_call_args(node)
       end
@@ -591,6 +897,34 @@ module Crystal
           next_token_skip_space_or_newline
         end
       end
+
+      if named_args = node.named_args
+        unless node.args.empty?
+          check :","
+          write ", "
+          next_token_skip_space_or_newline
+        end
+
+        named_args.each_with_index do |named_arg, i|
+          no_indent { named_arg.accept self }
+          skip_space_or_newline
+          if @token.type == :","
+            write ", " unless last?(i, named_args)
+            next_token_skip_space_or_newline
+          end
+        end
+      end
+    end
+
+    def visit(node : NamedArgument)
+      write node.name
+      next_token_skip_space_or_newline
+      check :":"
+      write ": "
+      next_token_skip_space_or_newline
+      no_indent { node.value.accept self }
+
+      false
     end
 
     def visit(node : Block)
@@ -653,6 +987,29 @@ module Crystal
       next_token_skip_space
     end
 
+    def visit(node : IsA)
+      prelude
+
+      node.obj.accept self
+      skip_space_or_newline
+      check :"."
+      write "."
+      next_token_skip_space_or_newline
+      check_keyword :is_a?
+      write "is_a?"
+      next_token_skip_space_or_newline
+      check :"("
+      write "("
+      next_token_skip_space_or_newline
+      no_indent { node.const.accept self }
+      skip_space_or_newline
+      check :")"
+      write ")"
+      next_token
+
+      false
+    end
+
     def visit(node : Or)
       format_binary node, :"||"
     end
@@ -662,10 +1019,8 @@ module Crystal
     end
 
     def format_binary(node, token)
-      prelude
-
       node.left.accept self
-      next_token_skip_space
+      skip_space
 
       check token
       write " "
@@ -679,14 +1034,182 @@ module Crystal
     end
 
     def visit(node : Assign)
-      prelude
-
       node.target.accept self
       skip_space_or_newline
-      check :"="
-      write " = "
+
+      if @token.type == :"="
+        check :"="
+        write " = "
+        next_token_skip_space_or_newline
+        no_indent { node.value.accept self }
+      else
+        # This is the case of `target op= value`
+        write " "
+        write @token.type
+        write " "
+        next_token_skip_space_or_newline
+        call = node.value as Call
+        no_indent { call.args.first.accept self }
+      end
+
+      false
+    end
+
+    def visit(node : Require)
+      prelude
+
+      check_keyword :require
+      write "require "
       next_token_skip_space_or_newline
-      no_indent { node.value.accept self }
+
+      no_indent { StringLiteral.new(node.string).accept self }
+
+      false
+    end
+
+    def visit(node : VisibilityModifier)
+      prelude
+
+      check_keyword node.modifier
+      write node.modifier
+      write " "
+      next_token_skip_space_or_newline
+
+      no_indent { node.exp.accept self }
+
+      false
+    end
+
+    def visit(node : MagicConstant)
+      check node.name
+      write node.name
+      next_token
+
+      false
+    end
+
+    def visit(node : ModuleDef)
+      prelude
+
+      check_keyword :module
+      write "module "
+      next_token_skip_space_or_newline
+
+      no_indent { node.name.accept self }
+      skip_space_or_newline
+      format_type_vars node.type_vars
+
+      unless node.body.is_a?(Nop)
+        write_line
+        indent { node.body.accept self }
+      end
+
+      write_line
+      write_indent
+
+      skip_space_or_newline
+      check_end
+      write "end"
+      next_token
+
+      false
+    end
+
+    def visit(node : ClassDef)
+      prelude
+
+      if node.abstract
+        check_keyword :abstract
+        write "abstract "
+        next_token_skip_space_or_newline
+      end
+
+      if node.struct
+        check_keyword :struct
+        write "struct "
+      else
+        check_keyword :class
+        write "class "
+      end
+      next_token_skip_space_or_newline
+
+      no_indent { node.name.accept self }
+      skip_space_or_newline
+      format_type_vars node.type_vars
+
+      if superclass = node.superclass
+        check :"<"
+        write " < "
+        next_token_skip_space_or_newline
+        no_indent { superclass.accept self }
+      end
+
+      unless node.body.is_a?(Nop)
+        write_line
+        indent { node.body.accept self }
+      end
+
+      write_line
+      write_indent
+
+      skip_space_or_newline
+      check_end
+      write "end"
+      next_token
+
+      false
+    end
+
+    def format_type_vars(type_vars)
+      if type_vars
+        check :"("
+        write "("
+        next_token_skip_space_or_newline
+        type_vars.each_with_index do |type_var, i|
+          write type_var
+          next_token_skip_space_or_newline
+          if @token.type == :","
+            write ", " unless last?(i, type_vars)
+            next_token_skip_space_or_newline
+          end
+        end
+        check :")"
+        write ")"
+        next_token_skip_space_or_newline
+      end
+    end
+
+    def visit(node : Include)
+      prelude
+
+      check_keyword :include
+      write "include "
+      next_token_skip_space_or_newline
+
+      no_indent { node.name.accept self }
+
+      false
+    end
+
+    def visit(node : Extend)
+      prelude
+
+      check_keyword :extend
+      write "extend "
+      next_token_skip_space_or_newline
+
+      no_indent { node.name.accept self }
+
+      false
+    end
+
+    def visit(node : DeclareVar)
+      node.var.accept self
+      skip_space_or_newline
+      check :"::"
+      write " :: "
+      next_token_skip_space_or_newline
+      no_indent { node.declared_type.accept self }
 
       false
     end
@@ -696,12 +1219,107 @@ module Crystal
       true
     end
 
+    def visit(node : Return)
+      format_control_expression node, :return
+    end
+
+    def visit(node : Break)
+      format_control_expression node, :break
+    end
+
+    def visit(node : Next)
+      format_control_expression node, :next
+    end
+
+    def format_control_expression(node, keyword)
+      prelude
+
+      check_keyword keyword
+      write keyword
+      next_token
+
+      has_parenthesis = false
+      if @token.type == :"("
+        has_parenthesis = true
+        write "("
+        next_token_skip_space_or_newline
+      end
+
+      if exp = node.exp
+        write " " unless has_parenthesis
+
+        if exp.is_a?(TupleLiteral) && @token.type != :"{"
+          exp.elements.each_with_index do |elem, i|
+            no_indent { elem.accept self }
+            skip_space_or_newline
+            if @token.type == :","
+              write ", " unless last?(i, exp.elements)
+              next_token_skip_space_or_newline
+            end
+          end
+        else
+          no_indent { exp.accept self }
+          skip_space_or_newline
+        end
+      end
+
+      if has_parenthesis
+        check :")"
+        write ")"
+        next_token
+      end
+
+      false
+    end
+
+    def visit(node : Yield)
+      prelude
+
+      check_keyword :yield
+      write "yield"
+      next_token
+
+      has_parenthesis = false
+      if @token.type == :"("
+        has_parenthesis = true
+        write "("
+        next_token_skip_space_or_newline
+      else
+        write " " unless node.exps.empty?
+      end
+
+      node.exps.each_with_index do |exp, i|
+        no_indent { exp.accept self }
+        skip_space_or_newline
+        if @token.type == :","
+          write ", " unless last?(i, node.exps)
+          next_token_skip_space_or_newline
+        end
+      end
+
+      if has_parenthesis
+        check :")"
+        write ")"
+        next_token
+      end
+
+      false
+    end
+
     def to_s(io)
       io << @output
     end
 
     def next_token
       @token = @lexer.next_token
+    end
+
+    def next_string_token
+      @token = @lexer.next_string_token(@token.delimiter_state)
+    end
+
+    def next_string_array_token
+      @token = @lexer.next_string_array_token
     end
 
     def next_token_skip_space

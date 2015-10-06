@@ -426,7 +426,7 @@ module Crystal
           @token.type = :SYMBOL
           @token.value = string_range(start)
           next_char
-          raw_from_start(start - 2)
+          set_token_raw_from_start(start - 2)
         else
           if ident_start?(char)
             start = current_pos
@@ -438,7 +438,7 @@ module Crystal
             end
             @token.type = :SYMBOL
             @token.value = string_range(start)
-            raw_from_start(start - 1)
+            set_token_raw_from_start(start - 1)
           else
             @token.type = :":"
           end
@@ -530,13 +530,13 @@ module Crystal
           raise "unterminated char literal, use double quotes for strings", line, column
         end
         next_char
-        raw_from_start(start)
+        set_token_raw_from_start(start)
       when '"', '`'
         delimiter = current_char
         next_char
         @token.type = :DELIMITER_START
         @token.delimiter_state = Token::DelimiterState.new(delimiter == '`' ? :command : :string, delimiter, delimiter, 0)
-        raw_from_start(start)
+        set_token_raw_from_start(start)
       when '0'
         scan_zero_number(start)
       when '1', '2', '3', '4', '5', '6', '7', '8', '9'
@@ -1222,7 +1222,7 @@ module Crystal
       end
 
       @token.value = string_value
-      raw_from_start(start)
+      set_token_raw_from_start(start)
     end
 
     macro gen_check_int_fits_in_size(type, method, size)
@@ -1469,7 +1469,7 @@ module Crystal
 
       @token.type = :NUMBER
       @token.value = string_value
-      raw_from_start(start)
+      set_token_raw_from_start(start)
     end
 
     def consume_int_suffix
@@ -1713,7 +1713,7 @@ module Crystal
         @token.value = string_range(start)
       end
 
-      raw_from_start(start)
+      set_token_raw_from_start(start)
 
       @token
     end
@@ -2154,7 +2154,7 @@ module Crystal
       next_char
       @token.type = :DELIMITER_START
       @token.delimiter_state = Token::DelimiterState.new(kind, string_nest, string_end, 0)
-      raw_from_start(start)
+      set_token_raw_from_start(start)
     end
 
     def next_string_array_token
@@ -2183,6 +2183,7 @@ module Crystal
 
       @token.type = :STRING
       @token.value = string_range(start)
+      set_token_raw_from_start(start)
 
       @token
     end
@@ -2386,7 +2387,7 @@ module Crystal
       raise "unknown token: #{current_char.inspect}", @line_number, @column_number
     end
 
-    def raw_from_start(start)
+    def set_token_raw_from_start(start)
       @token.raw = string_range(start) if @wants_raw
     end
 

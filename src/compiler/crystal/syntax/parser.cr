@@ -1739,12 +1739,11 @@ module Crystal
     def parse_string_or_symbol_array(klass, elements_type)
       strings = [] of ASTNode
 
-      next_string_array_token
       while true
+        next_string_array_token
         case @token.type
         when :STRING
           strings << klass.new(@token.value.to_s)
-          next_string_array_token
         when :STRING_ARRAY_END
           next_token
           break
