@@ -24,7 +24,8 @@ module Crystal
       prelude indent: false
 
       old_indent = @indent
-      base_ident = old_indent
+      column = @column
+      base_indent = old_indent
       next_needs_indent = true
 
       has_paren = false
@@ -43,14 +44,14 @@ module Crystal
           next_token_skip_space_or_newline
         end
         has_begin = true
-        @indent += 2
-        base_ident = @indent
+        @indent = column + 2
+        base_indent = @indent
       end
 
       node.expressions.each_with_index do |exp, i|
         @indent = 0 unless next_needs_indent
         exp.accept self
-        @indent = base_ident
+        @indent = base_indent
 
         skip_space
 
@@ -81,7 +82,7 @@ module Crystal
         check_end
         next_token
         write_line
-        @indent -= 2
+        @indent = column
         write_indent
         write "end"
       end
@@ -261,6 +262,19 @@ module Crystal
     def visit_if_or_unless(node, keyword, prefix)
       prelude
 
+      if !@token.keyword?(keyword) && node.else.is_a?(Nop)
+        # Suffix if/unless
+        no_indent { node.then.accept self }
+        skip_space_or_newline
+        check_keyword keyword
+        write " "
+        write keyword
+        write " "
+        next_token_skip_space_or_newline
+        no_indent { node.cond.accept self }
+        return false
+      end
+
       # This is the case of `cond ? exp1 : exp2`
       if keyword == :if && !@token.keyword?(:if)
         no_indent { node.cond.accept self }
@@ -277,22 +291,24 @@ module Crystal
         return false
       end
 
+      column = @column
+
       check_keyword keyword
       write prefix
       next_token_skip_space_or_newline
 
-      format_if_at_cond node
+      format_if_at_cond node, column
 
       false
     end
 
-    def format_if_at_cond(node, check_end = true)
+    def format_if_at_cond(node, column, check_end = true)
       no_indent { node.cond.accept self }
 
       write_line
 
       unless node.then.is_a?(Nop)
-        indent { node.then.accept self }
+        indent(column + 2) { node.then.accept self }
         write_line
       end
 
@@ -301,29 +317,48 @@ module Crystal
       node_else = node.else
 
       if @token.keyword?(:else)
-        write_indent
+        write_indent(column)
         write "else"
         write_line
         next_token_skip_space_or_newline
 
         unless node_else.is_a?(Nop)
-          indent { node.else.accept self }
+          indent(column + 2) { node.else.accept self }
         end
         write_line
       elsif node_else.is_a?(If) && @token.keyword?(:elsif)
-        write_indent
+        write_indent(column)
         write "elsif "
         next_token_skip_space_or_newline
-        format_if_at_cond node_else, check_end: false
+        format_if_at_cond node_else, column, check_end: false
       end
 
       if check_end
         skip_space_or_newline
         check_end()
-        write_indent
+        write_indent(column)
         write "end"
         next_token
       end
+    end
+
+    def visit(node : While)
+      prelude
+
+      check_keyword :while
+      write "while "
+      next_token_skip_space_or_newline
+      no_indent { node.cond.accept self }
+      write_line
+      indent { node.body.accept self }
+      skip_space_or_newline
+      check_end
+      write_line
+      write_indent
+      write "end"
+      next_token
+
+      false
     end
 
     def visit(node : Def)
@@ -389,7 +424,6 @@ module Crystal
 
         old_indent = @indent
         next_needs_indent = false
-        has_newlines = false
         @indent = 0
 
         if @token.type == :"("
@@ -398,7 +432,6 @@ module Crystal
           if @token.type == :NEWLINE
             write_line
             next_needs_indent = true
-            has_newlines = true
           end
           skip_space_or_newline
         else
@@ -421,9 +454,10 @@ module Crystal
             write "," unless last?(i, node.args)
             next_token_skip_space
             if @token.type == :NEWLINE
-              write_line
-              next_needs_indent = true
-              has_newlines = true
+              unless last?(i, node.args)
+                write_line
+                next_needs_indent = true
+              end
             else
               next_needs_indent = false
               write " " unless last?(i, node.args)
@@ -433,13 +467,6 @@ module Crystal
         end
 
         if @token.type == :")"
-          if has_newlines
-            write ","
-            write_line
-            @indent = prefix_size - 1
-            write_indent
-          end
-
           write ")"
           next_token_skip_space_or_newline
         end
@@ -490,9 +517,34 @@ module Crystal
 
         if @token.type != :"."
           # It's an operator
-          write " "
-          write @token.type
-          write " "
+          if node.name == "*" || node.name == "/"
+            write node.name
+          elsif @token.type == :"["
+            write "["
+            next_token_skip_space_or_newline
+            node.args.each_with_index do |arg, i|
+              no_indent { arg.accept self }
+              skip_space_or_newline
+              if @token.type == :","
+                unless last?(i, node.args)
+                  write ", "
+                end
+                next_token_skip_space_or_newline
+              end
+            end
+            check :"]"
+            write "]"
+            next_token
+            return false
+          elsif @token.type == :"[]"
+            write "[]"
+            next_token
+            return false
+          else
+            write " "
+            write node.name
+            write " "
+          end
           next_token_skip_space_or_newline
           no_indent { node.args.first.accept self }
           return false
@@ -545,36 +597,60 @@ module Crystal
       if @token.keyword?(:do)
         write " do"
         next_token_skip_space_or_newline
-        unless node.args.empty?
-          check :"|"
-          write " |"
-          next_token_skip_space_or_newline
-          node.args.each_with_index do |arg, i|
-            no_indent { arg.accept self }
-            skip_space_or_newline
-            if @token.type == :","
-              next_token_skip_space_or_newline
-              write ", " unless last?(i, node.args)
-            end
-          end
-          skip_space_or_newline
-          check :"|"
-          write "|"
-          next_token_skip_space_or_newline
-        end
+        format_block_args node.args
+        skip_space_or_newline
         write_line
-        indent do
-          node.body.accept self
-        end
+        indent { node.body.accept self }
         skip_space_or_newline
         write_line
         check_end
         write_indent
         write "end"
         next_token
+      else
+        check :"{"
+        write " {"
+        next_token_skip_space
+        format_block_args node.args
+        if @token.type == :NEWLINE
+          write_line
+          indent { node.body.accept self }
+          skip_space_or_newline
+          write_line
+          check :"}"
+          write_indent
+          write "}"
+        else
+          write " "
+          no_indent { node.body.accept self }
+          skip_space_or_newline
+          check :"}"
+          write " }"
+        end
+        next_token
       end
 
       false
+    end
+
+    def format_block_args(args)
+      return if args.empty?
+
+      check :"|"
+      write " |"
+      next_token_skip_space_or_newline
+      args.each_with_index do |arg, i|
+        no_indent { arg.accept self }
+        skip_space_or_newline
+        if @token.type == :","
+          next_token_skip_space_or_newline
+          write ", " unless last?(i, args)
+        end
+      end
+      skip_space_or_newline
+      check :"|"
+      write "|"
+      next_token_skip_space
     end
 
     def visit(node : Or)
@@ -598,6 +674,19 @@ module Crystal
       next_token_skip_space_or_newline
 
       node.right.accept self
+
+      false
+    end
+
+    def visit(node : Assign)
+      prelude
+
+      node.target.accept self
+      skip_space_or_newline
+      check :"="
+      write " = "
+      next_token_skip_space_or_newline
+      no_indent { node.value.accept self }
 
       false
     end
@@ -678,6 +767,13 @@ module Crystal
       @indent -= 2
     end
 
+    def indent(indent)
+      old_indent = @indent
+      @indent = indent
+      yield
+      @indent = old_indent
+    end
+
     def no_indent
       old_indent = @indent
       @indent = 0
@@ -686,7 +782,11 @@ module Crystal
     end
 
     def write_indent
-      @indent.times { write " " }
+      write_indent @indent
+    end
+
+    def write_indent(indent)
+      indent.times { write " " }
     end
 
     def write(string : String)

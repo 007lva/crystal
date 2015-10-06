@@ -80,6 +80,9 @@ describe Crystal::Formatter do
   assert_format "1 ? 2 : 3"
   assert_format "1 ?\n  2    :   \n 3", "1 ? 2 : 3"
 
+  assert_format "1   if   2", "1 if 2"
+  assert_format "1   unless   2", "1 unless 2"
+
   assert_format "[] of Int32\n1"
 
   assert_format "(1)"
@@ -98,8 +101,9 @@ describe Crystal::Formatter do
   assert_format "def   foo   x  \n  end", "def foo x\nend"
   assert_format "def   foo (  x , y )  \n  end", "def foo(x, y)\nend"
   assert_format "def   foo (  x , y , )  \n  end", "def foo(x, y)\nend"
-  assert_format "def   foo (  x ,\n y )  \n  end", "def foo(x,\n        y,\n       )\nend"
-  assert_format "def   foo (\nx ,\n y )  \n  end", "def foo(\n        x,\n        y,\n       )\nend"
+  assert_format "def   foo (  x , y ,\n)  \n  end", "def foo(x, y)\nend"
+  assert_format "def   foo (  x ,\n y )  \n  end", "def foo(x,\n        y)\nend"
+  assert_format "def   foo (\nx ,\n y )  \n  end", "def foo(\n        x,\n        y)\nend"
   assert_format "def   foo (  @x)  \n  end", "def foo(@x)\nend"
   assert_format "def   foo (  @x, @y)  \n  end", "def foo(@x, @y)\nend"
   assert_format "def   foo (  @@x)  \n  end", "def foo(@@x)\nend"
@@ -120,12 +124,29 @@ describe Crystal::Formatter do
   assert_format "foo do  | x | \n x \n end", "foo do |x|\n  x\nend"
   assert_format "foo do  | x , y | \n x \n end", "foo do |x, y|\n  x\nend"
   assert_format "if 1\nfoo do  | x , y | \n x \n end\nend", "if 1\n  foo do |x, y|\n    x\n  end\nend"
+  assert_format "foo{|x| x}", "foo { |x| x }"
+  assert_format "foo{|x|\n x}", "foo { |x|\n  x\n}"
 
   assert_format "1   +   2", "1 + 2"
   assert_format "1   >   2", "1 > 2"
+  assert_format "1   *   2", "1*2"
+  assert_format "1 / 2", "1/2"
+  assert_format "10/a", "10/a"
+
+  assert_format "foo[]", "foo[]"
+  assert_format "foo[ 1 , 2 ]", "foo[1, 2]"
 
   assert_format "1  ||  2", "1 || 2"
   assert_format "1  &&  2", "1 && 2"
 
   assert_format "def foo\nend\ndef bar\nend"
+
+  assert_format "a=1", "a = 1"
+
+  assert_format "while 1\n2\nend", "while 1\n  2\nend"
+
+  assert_format "a = begin\n1\n2\nend", "a = begin\n      1\n      2\n    end"
+  assert_format "a = if 1\n2\n3\nend", "a = if 1\n      2\n      3\n    end"
+  assert_format "a = if 1\n2\nelse\n3\nend", "a = if 1\n      2\n    else\n      3\n    end"
+  assert_format "a = if 1\n2\nelsif 3\n4\nend", "a = if 1\n      2\n    elsif 3\n      4\n    end"
 end
