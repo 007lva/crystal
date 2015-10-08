@@ -18,6 +18,7 @@ module Crystal
       def self.default
         MacroState.new(true, 0, nil, true, false, false)
       end
+      property whitespace
     end
 
     record DelimiterState, kind, nest, :end, open_count

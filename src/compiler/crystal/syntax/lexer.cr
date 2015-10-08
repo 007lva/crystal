@@ -1737,15 +1737,7 @@ module Crystal
       yields = false
 
       if skip_whitespace
-        while current_char.whitespace?
-          whitespace = true
-          if current_char == '\n'
-            @line_number += 1
-            @column_number = 0
-            beginning_of_line = true
-          end
-          next_char
-        end
+        skip_macro_whitespace
       end
 
       @token.location = nil
@@ -1789,6 +1781,7 @@ module Crystal
         @token.type = :MACRO_LITERAL
         @token.value = string_range(start)
         @token.macro_state = Token::MacroState.new(whitespace, nest, delimiter_state, beginning_of_line, yields, comment)
+        set_token_raw_from_start(start)
         return @token
       end
 
@@ -1799,6 +1792,7 @@ module Crystal
         @token.type = :MACRO_LITERAL
         @token.value = "%"
         @token.macro_state = Token::MacroState.new(whitespace, nest, delimiter_state, beginning_of_line, yields, comment)
+        @token.raw = "%"
         return @token
       end
 
@@ -1845,6 +1839,7 @@ module Crystal
         @token.type = :MACRO_LITERAL
         @token.value = string_range(start)
         @token.macro_state = Token::MacroState.new(whitespace, nest, delimiter_state, beginning_of_line, yields, comment)
+        set_token_raw_from_start(start)
         return @token
       end
 
@@ -1986,8 +1981,27 @@ module Crystal
       @token.type = :MACRO_LITERAL
       @token.value = string_range(start)
       @token.macro_state = Token::MacroState.new(whitespace, nest, delimiter_state, beginning_of_line, yields, comment)
+      set_token_raw_from_start(start)
 
       @token
+    end
+
+    def skip_macro_whitespace
+      start = current_pos
+      while current_char.whitespace?
+        whitespace = true
+        if current_char == '\n'
+          @line_number += 1
+          @column_number = 0
+          beginning_of_line = true
+        end
+        next_char
+      end
+      if @wants_raw
+        string_range(start)
+      else
+        ""
+      end
     end
 
     def check_macro_opening_keyword(beginning_of_line)

@@ -21,6 +21,8 @@ module Crystal
       @column = 0
       @visibility_indent = nil
       @wrote_nelwine = false
+      @macro_state = Token::MacroState.default
+      @inside_macro = 0
     end
 
     def visit(node : Expressions)
@@ -544,7 +546,9 @@ module Crystal
 
       node.types.each_with_index do |type, i|
         no_indent type
-        skip_space_or_newline
+
+        last = last?(i, node.types)
+        skip_space_or_newline unless last
 
         # This can happen if it's a nilable type written like T?
         case @token.type
@@ -553,8 +557,9 @@ module Crystal
           next_token
           break
         when :"|"
-          write " | " unless last?(i, node.types)
-          next_token_skip_space_or_newline
+          write " | " unless last
+          next_token
+          skip_space_or_newline unless last
         when :")"
           # This can happen in a case like (A)?
           break
@@ -632,7 +637,7 @@ module Crystal
 
       format_nested node.then, column
 
-      skip_space_or_newline
+      indent(column + 2) { skip_space_or_newline last: true }
 
       node_else = node.else
 
@@ -650,7 +655,7 @@ module Crystal
       end
 
       if check_end
-        skip_space_or_newline
+        indent(column + 2) { skip_space_or_newline last: true }
         check_end()
         write_indent(column)
         write "end"
@@ -678,7 +683,7 @@ module Crystal
       no_indent node.cond
 
       format_nested node.body, column
-      skip_space_or_newline
+      indent(column + 2) { skip_space_or_newline last: true }
 
       check_end
       write_indent(column)
@@ -688,13 +693,13 @@ module Crystal
       false
     end
 
-    def format_nested(node, column)
+    def format_nested(node, column, write_end_line = true)
       if node.is_a?(Nop)
         skip_nop(column + 2)
       else
         skip_space_write_line
         indent(column + 2, node)
-        skip_space_write_line
+        skip_space_write_line if write_end_line
       end
     end
 
@@ -705,9 +710,17 @@ module Crystal
         prelude
       end
 
+      column = @column
+
       if node.abstract
         check_keyword :abstract
         write "abstract "
+        next_token_skip_space_or_newline
+      end
+
+      if node.macro_def?
+        check_keyword :macro
+        write "macro "
         next_token_skip_space_or_newline
       end
 
@@ -727,7 +740,22 @@ module Crystal
       next_token_skip_space
       next_token_skip_space if @token.type == :"="
 
-      to_skip = write_def_args node
+      to_skip = format_def_args node
+
+      if return_type = node.return_type
+        skip_space
+        check :":"
+        write " : "
+        next_token_skip_space_or_newline
+        no_indent node.return_type.not_nil!
+      end
+
+      if node.macro_def?
+        format_macro_body node, column
+
+        return false
+      end
+
       body = node.body
 
       if to_skip > 0
@@ -761,15 +789,19 @@ module Crystal
       false
     end
 
-    def write_def_args(node)
+    def format_def_args(node : ASTNode)
+      format_def_args node.args, node.block_arg, node.splat_index
+    end
+
+    def format_def_args(args : Array, block_arg, splat_index)
       to_skip = 0
 
       # If there are no args, remove extra "()", if any
-      if node.args.empty?
+      if args.empty?
         if @token.type == :"("
           next_token_skip_space_or_newline
 
-          if block_arg = node.block_arg
+          if block_arg
             check :"&"
             write "(&"
             next_token_skip_space
@@ -780,8 +812,8 @@ module Crystal
           end
 
           check :")"
-          next_token_skip_space_or_newline
-        elsif block_arg = node.block_arg
+          next_token
+        elsif block_arg
           skip_space_or_newline
           check :"&"
           write " &"
@@ -811,10 +843,10 @@ module Crystal
           write " "
         end
 
-        node.args.each_with_index do |arg, i|
+        args.each_with_index do |arg, i|
           @indent = prefix_size if next_needs_indent
 
-          if i == node.splat_index
+          if i == splat_index
             check :"*"
             write "*"
             next_token_skip_space_or_newline
@@ -825,22 +857,22 @@ module Crystal
           @indent = 0
           skip_space_or_newline
           if @token.type == :","
-            write "," unless last?(i, node.args)
+            write "," unless last?(i, args)
             next_token_skip_space
             if @token.type == :NEWLINE
-              unless last?(i, node.args)
+              unless last?(i, args)
                 write_line
                 next_needs_indent = true
               end
             else
               next_needs_indent = false
-              write " " unless last?(i, node.args)
+              write " " unless last?(i, args)
             end
             skip_space_or_newline
           end
         end
 
-        if block_arg = node.block_arg
+        if block_arg
           check :"&"
           write ", &"
           next_token_skip_space
@@ -851,7 +883,7 @@ module Crystal
         if has_parenthesis
           check :")"
           write ")"
-          next_token_skip_space_or_newline
+          next_token
         end
 
         @indent = old_indent
@@ -864,6 +896,236 @@ module Crystal
     # find an instance var we later need to skip the first expressions in the body
     def at_skip?
       @token.type == :INSTANCE_VAR || @token.type == :CLASS_VAR
+    end
+
+    def visit(node : Macro)
+      if @visibility_indent
+        @visibility_indent = nil
+      else
+        prelude
+      end
+
+      column = @column
+
+      check_keyword :macro
+      write "macro "
+      next_token_skip_space_or_newline
+
+      check :IDENT
+      write node.name
+      next_token
+
+      format_def_args node
+      format_macro_body node, column
+
+      false
+    end
+
+    def format_macro_body(node, column)
+      if @token.keyword?(:end)
+        write_line
+        write "end"
+        next_token
+        return false
+      end
+
+      next_macro_token
+
+      inside_macro do
+        format_nested node.body, column, write_end_line: false
+      end
+
+      skip_space_or_newline
+      check :MACRO_END
+      write "end"
+      next_token
+    end
+
+    def visit(node : MacroLiteral)
+      write @token.raw
+      next_macro_token
+      false
+    end
+
+    def visit(node : MacroExpression)
+      prelude unless inside_macro?
+
+      if node.output
+        if inside_macro?
+          check :MACRO_EXPRESSION_START
+        else
+          check :"{{"
+        end
+        write "{{"
+      else
+        check :MACRO_CONTROL_START
+        write "{% "
+      end
+      macro_state = @macro_state
+      next_token_skip_space_or_newline
+      no_indent node.exp
+      skip_space_or_newline
+      @macro_state = macro_state
+
+      if node.output
+        check :"}"
+        next_token
+        check :"}"
+        write "}}"
+      else
+        check :"%}"
+        write " %}"
+      end
+
+      if inside_macro?
+        check_macro_whitespace
+        next_macro_token
+      else
+        next_token
+      end
+
+      false
+    end
+
+    def visit(node : MacroIf)
+      prelude unless inside_macro?
+
+      if inside_macro?
+        check :MACRO_CONTROL_START
+      else
+        check :"{%"
+      end
+      write "{% "
+
+      macro_state = @macro_state
+      next_token_skip_space_or_newline
+
+      check_keyword :if
+      write "if "
+      next_token_skip_space_or_newline
+
+      outside_macro { no_indent node.cond }
+      skip_space_or_newline
+
+      check :"%}"
+      write " %}"
+
+      @macro_state = macro_state
+      check_macro_whitespace
+      next_macro_token
+
+      inside_macro { no_indent node.then }
+
+      unless node.else.is_a?(Nop)
+        check :MACRO_CONTROL_START
+        macro_state = @macro_state
+        next_token_skip_space_or_newline
+
+        check_keyword :else
+        next_token_skip_space_or_newline
+        check :"%}"
+
+        write "{% else %}"
+        check_macro_whitespace
+        next_macro_token
+
+        inside_macro { no_indent node.else }
+      end
+
+      check :MACRO_CONTROL_START
+      macro_state = @macro_state
+      next_token_skip_space_or_newline
+
+      check_end
+      next_token_skip_space_or_newline
+      check :"%}"
+
+      write "{% end %}"
+
+      if inside_macro?
+        check_macro_whitespace
+        next_macro_token
+      else
+        next_token
+      end
+
+      false
+    end
+
+    def visit(node : MacroFor)
+      prelude unless inside_macro?
+
+      if inside_macro?
+        check :MACRO_CONTROL_START
+      else
+        check :"{%"
+      end
+      write "{% "
+
+      macro_state = @macro_state
+      next_token_skip_space_or_newline
+
+      check_keyword :for
+      write "for "
+      next_token_skip_space_or_newline
+
+      outside_macro do
+        node.vars.each_with_index do |var, i|
+          no_indent var
+          unless last?(i, node.vars)
+            skip_space_or_newline
+            if @token.type == :","
+              write ", "
+              next_token_skip_space_or_newline
+            end
+          end
+        end
+      end
+
+      skip_space_or_newline
+
+      check_keyword :in
+      write " in "
+      next_token_skip_space_or_newline
+
+      outside_macro { no_indent node.exp }
+      skip_space_or_newline
+
+      check :"%}"
+      write " %}"
+
+      check_macro_whitespace
+      next_macro_token
+
+      inside_macro { no_indent node.body }
+
+      check :MACRO_CONTROL_START
+      macro_state = @macro_state
+      next_token_skip_space_or_newline
+
+      check_end
+      next_token_skip_space_or_newline
+      check :"%}"
+
+      write "{% end %}"
+
+      if inside_macro?
+        check_macro_whitespace
+        next_macro_token
+      else
+        next_token
+      end
+
+      false
+    end
+
+    def visit(node : MacroVar)
+      check :MACRO_VAR
+      write "%"
+      write node.name
+      next_macro_token
+
+      false
     end
 
     def visit(node : Arg)
@@ -954,6 +1216,13 @@ module Crystal
       false
     end
 
+    def visit(node : Self)
+      check_keyword :self
+      write "self"
+      next_token
+      false
+    end
+
     def visit(node : Var)
       prelude
       write node.name
@@ -1002,21 +1271,22 @@ module Crystal
         prelude
       end
 
+      if node.global
+        check :"::"
+        write "::"
+        next_token
+      end
+
       base_column = @column
 
       if obj = node.obj
-        if node.name == "!" && @token.type == :"!"
-          write "!"
-          next_token_skip_space_or_newline
-          no_indent obj
-          return false
-        end
-
-        if node.name == "-" && @token.type == :"-"
-          write "-"
-          next_token_skip_space_or_newline
-          no_indent obj
-          return false
+        {:"!", :"-", :"~"}.each do |op|
+          if node.name == op.to_s && @token.type == op
+            write op
+            next_token_skip_space_or_newline
+            no_indent obj
+            return false
+          end
         end
 
         no_indent obj
@@ -1130,7 +1400,17 @@ module Crystal
 
       if assignment
         skip_space
-        check :"="
+
+        if @token.type != :"="
+          # It's something like `foo.bar += 1`
+          write " "
+          write @token.type
+          write " "
+          next_token_skip_space_or_newline
+          no_indent (node.args.first as Call).args.first
+          return false
+        end
+
         write " = "
         next_token_skip_space_or_newline
         no_indent node.args.first
@@ -1142,8 +1422,14 @@ module Crystal
 
       if @token.type == :"("
         check :"("
-        write "("
         next_token_skip_space_or_newline
+        if obj && !has_args && !node.block_arg && !node.block
+          check :")"
+          next_token
+          return false
+        end
+
+        write "("
         has_parenthesis = true
         format_call_args(node)
         skip_space_or_newline
@@ -1286,7 +1572,7 @@ module Crystal
         write " " if needs_space
         write "&."
         call = node.body as Call
-        call.obj = nil
+        clear_obj call
         no_indent call
       end
     end
@@ -1437,6 +1723,8 @@ module Crystal
     def visit(node : ModuleDef)
       prelude
 
+      column = @column
+
       check_keyword :module
       write "module "
       next_token_skip_space_or_newline
@@ -1444,11 +1732,12 @@ module Crystal
       no_indent node.name
       format_type_vars node.type_vars
 
-      format_nested node.body, @indent
-      write_indent
+      format_nested node.body, column
 
-      skip_space_or_newline
+      indent(column + 2) { skip_space_or_newline last: true }
+
       check_end
+      write_indent
       write "end"
       next_token
 
@@ -1457,6 +1746,8 @@ module Crystal
 
     def visit(node : ClassDef)
       prelude
+
+      column = @column
 
       if node.abstract
         check_keyword :abstract
@@ -1484,10 +1775,10 @@ module Crystal
         no_indent superclass
       end
 
-      format_nested node.body, @indent
-      write_indent
+      format_nested node.body, column
+      indent(column + 2) { skip_space_or_newline last: true }
 
-      skip_space_or_newline
+      write_indent
       check_end
       write "end"
       next_token
@@ -1743,10 +2034,7 @@ module Crystal
         separator = @token.to_s
         next_token_skip_space
         if @token.type == :NEWLINE
-          next_token_skip_space_or_newline
-          write_line
-          indent node.body
-          write_line if is_last
+          format_nested(node.body, prefix_indent)
         else
           write " " if separator == "then"
           write separator
@@ -1758,6 +2046,10 @@ module Crystal
         format_nested(node.body, prefix_indent)
       end
 
+      false
+    end
+
+    def visit(node : ImplicitObj)
       false
     end
 
@@ -1962,6 +2254,11 @@ module Crystal
       @token = @lexer.next_string_array_token
     end
 
+    def next_macro_token
+      @token = @lexer.next_macro_token(@macro_state, false)
+      @macro_state = @token.macro_state
+    end
+
     def next_token_skip_space
       next_token
       skip_space
@@ -1992,24 +2289,25 @@ module Crystal
     def skip_space_or_newline(last = false)
       base_column = @column
       has_space = false
-      has_newline = false
+      newlines = 0
       while true
         case @token.type
         when :SPACE
           has_space = true
           next_token
         when :NEWLINE
-          has_newline = true
+          newlines += 1
           next_token
         else
           break
         end
       end
       if @token.type == :COMMENT
-        needs_space = has_space && !has_newline && base_column != 0
+        needs_space = has_space && newlines == 0 && base_column != 0
         if needs_space
           write " "
-        elsif last && has_newline
+        elsif last && newlines > 0
+          write_line if !@wrote_nelwine && newlines > 1
           write_line
         end
         write_comment(needs_indent: !needs_space)
@@ -2126,6 +2424,15 @@ module Crystal
       @wrote_nelwine = true
     end
 
+    def clear_obj(call)
+      obj = call.obj
+      if obj.is_a?(Call)
+        clear_obj obj
+      else
+        call.obj = nil
+      end
+    end
+
     def finish
       skip_space
       write_line if @token.type == :NEWLINE
@@ -2146,6 +2453,35 @@ module Crystal
 
     def last?(index, collection)
       index == collection.size - 1
+    end
+
+    def inside_macro
+      @inside_macro += 1
+      yield
+      @inside_macro -= 1
+    end
+
+    def outside_macro
+      old_inside_macro = @inside_macro
+      @inside_macro = 0
+      yield
+      @inside_macro = old_inside_macro
+    end
+
+    def inside_macro?
+      @inside_macro != 0
+    end
+
+    def check_macro_whitespace
+      if @lexer.current_char == '\\' && @lexer.peek_next_char.whitespace?
+        @lexer.next_char
+        write "\\"
+        write @lexer.skip_macro_whitespace
+        @macro_state.whitespace = true
+        true
+      else
+        false
+      end
     end
   end
 end

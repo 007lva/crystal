@@ -2226,7 +2226,7 @@ module Crystal
             pieces << macro_control
             skip_whitespace = check_macro_skip_whitespace
           else
-            return Expressions.from(pieces), nil
+            return new_macro_expressions(pieces), nil
           end
         when :MACRO_VAR
           macro_var_name = @token.value.to_s
@@ -2249,7 +2249,15 @@ module Crystal
 
       next_token
 
-      {Expressions.from(pieces), end_location}
+      {new_macro_expressions(pieces), end_location}
+    end
+
+    private def new_macro_expressions(pieces)
+      if pieces.empty?
+        Expressions.new
+      else
+        Expressions.from(pieces)
+      end
     end
 
     def parse_macro_var_exps
